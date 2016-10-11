@@ -22,6 +22,8 @@ var logger = loggo.GetLogger("dump")
 
 type dump struct {
 	showTxn  bool
+	useBSOND bool
+
 	filename string
 }
 
@@ -50,6 +52,7 @@ func (c *dump) AllowInterspersedFlags() bool {
 // SetFlags implements Command.
 func (c *dump) SetFlags(f *gnuflag.FlagSet) {
 	f.BoolVar(&c.showTxn, "txn", false, "Include txn-revno and txn-queue")
+	f.BoolVar(&c.useBSOND, "d", false, "Use bson.D rather than bson.M")
 }
 
 // Init implements Command.
@@ -66,7 +69,11 @@ func (c *dump) Run(ctx *cmd.Context) error {
 
 	fileContent, err := ioutil.ReadFile(c.filename)
 	if err != nil {
-		return err
+		// Try adding ".bson" to the filename
+		fileContent, err = ioutil.ReadFile(c.filename + ".bson")
+		if err != nil {
+			return err
+		}
 	}
 
 	for {
@@ -77,14 +84,39 @@ func (c *dump) Run(ctx *cmd.Context) error {
 		binary.Read(bytes.NewReader(fileContent), binary.LittleEndian, &size)
 
 		doc, fileContent = fileContent[0:size], fileContent[size:]
-		var content map[string]interface{}
-		if err := bson.Unmarshal(doc, &content); err != nil {
-			return err
+
+		var content interface{}
+		if c.useBSOND {
+			var value bson.D
+			if err := bson.Unmarshal(doc, &value); err != nil {
+				return err
+			}
+			if !c.showTxn {
+				var trimmed bson.D
+				for _, item := range value {
+					switch item.Name {
+					case "txn-revno", "txn-queue":
+					default:
+						trimmed = append(trimmed, item)
+					}
+				}
+				value = trimmed
+			}
+
+			content = value
+		} else {
+			var value bson.M
+			if err := bson.Unmarshal(doc, &value); err != nil {
+				return err
+			}
+			if !c.showTxn {
+				delete(value, "txn-revno")
+				delete(value, "txn-queue")
+			}
+
+			content = value
 		}
-		if !c.showTxn {
-			delete(content, "txn-revno")
-			delete(content, "txn-queue")
-		}
+
 		b, err := json.MarshalIndent(content, "", "  ")
 		if err != nil {
 			return err
